@@ -10,7 +10,10 @@
   },
   "dependencies": {
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "pdfjs-dist": "^3.10.111",
+    "mammoth": "^1.4.20",
+    "tesseract.js": "^4.0.2"
   },
   "devDependencies": {
     "vite": "^5.2.0",
