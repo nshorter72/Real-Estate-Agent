@@ -1,440 +1,496 @@
-/* TypeScript React component: Real Estate Accepted Offer uploader + client-side extraction
-   - Uses dynamic imports for pdfjs-dist, mammoth, and tesseract.js to avoid large bundles
-   - Extracts text from PDF, DOCX, and image files and heuristically parses common fields:
-     acceptanceDate, closingDate, inspectionPeriod, appraisalPeriod, financingDeadline,
-     propertyAddress, buyerName, sellerName, salePrice
-   - Shows parsed preview and lets user edit before generating timeline
-   - Usage: drop this file into a React + TypeScript project and render <RealEstateAgent />.
-   - Note: add runtime dependencies if you want to preinstall:
-       npm install pdfjs-dist mammoth tesseract.js
-     but the component will dynamically import them at runtime if available.
-*/
+import React, { useState } from 'react';
+import { Calendar, Mail, Upload, FileText, Clock, User, Home } from 'lucide-react';
 
-import React, { useState } from "react";
-
-type OfferDetails = {
-  acceptanceDate?: string;
-  closingDate?: string;
-  inspectionPeriod?: string;
-  appraisalPeriod?: string;
-  financingDeadline?: string;
-  propertyAddress?: string;
-  buyerName?: string;
-  sellerName?: string;
-  salePrice?: string;
-};
-
-export default function RealEstateAgent({
-  initial = {},
-  onGenerate,
-}: {
-  initial?: OfferDetails;
-  onGenerate?: (timeline: any[]) => void;
-}) {
-  const [file, setFile] = useState<File | null>(null);
-  const [tab, setTab] = useState<"upload" | "details" | "preview">("upload");
-  const [details, setDetails] = useState<OfferDetails>({
-    acceptanceDate: initial.acceptanceDate ?? "",
-    closingDate: initial.closingDate ?? "",
-    inspectionPeriod: initial.inspectionPeriod ?? "",
-    appraisalPeriod: initial.appraisalPeriod ?? "",
-    financingDeadline: initial.financingDeadline ?? "",
-    propertyAddress: initial.propertyAddress ?? "",
-    buyerName: initial.buyerName ?? "",
-    sellerName: initial.sellerName ?? "",
-    salePrice: initial.salePrice ?? "",
+const RealEstateAgent = () => {
+  const [uploadedOffer, setUploadedOffer] = useState(null);
+  const [offerDetails, setOfferDetails] = useState({
+    acceptanceDate: '',
+    closingDate: '',
+    inspectionPeriod: '',
+    appraisalPeriod: '',
+    financingDeadline: '',
+    propertyAddress: '',
+    buyerName: '',
+    sellerName: '',
+    salePrice: ''
   });
-  const [rawText, setRawText] = useState<string>("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [generatedTimeline, setGeneratedTimeline] = useState([]);
+  const [emailTemplates, setEmailTemplates] = useState([]);
+  const [activeTab, setActiveTab] = useState('upload');
 
-  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    setError(null);
-    const f = e.target.files && e.target.files[0];
-    if (!f) return;
-    setFile(f);
-    setTab("details");
-    await processFile(f);
-  }
-
-  async function processFile(f: File) {
-    setBusy(true);
-    setRawText("");
-    try {
-      const name = f.name.toLowerCase();
-      if (name.endsWith(".pdf")) {
-        const txt = await extractTextFromPDF(f);
-        setRawText(txt);
-        applyParsed(parseText(txt));
-      } else if (name.endsWith(".docx") || name.endsWith(".doc")) {
-        const txt = await extractTextFromDocx(f);
-        setRawText(txt);
-        applyParsed(parseText(txt));
-      } else if (isImageFile(name)) {
-        const txt = await ocrImage(f);
-        setRawText(txt);
-        applyParsed(parseText(txt));
-      } else {
-        setError("Unsupported file type. Supported: PDF, DOCX, DOC, JPG/PNG/TIFF");
-      }
-    } catch (err: any) {
-      console.error(err);
-      setError(err?.message || String(err));
-    } finally {
-      setBusy(false);
+  const handleFileUpload = async (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      setUploadedOffer(file);
+      // In a real app, you'd parse the PDF/document here
+      // For demo, we'll show a form to input details
+      setActiveTab('details');
     }
-  }
+  };
 
-  function applyParsed(parsed: Partial<OfferDetails>) {
-    setDetails((d) => ({ ...d, ...parsed }));
-    setTab("details");
-  }
+  const calculateDeadlines = () => {
+    if (!offerDetails.acceptanceDate) return;
 
-  function isImageFile(name: string) {
-    return /\.(jpe?g|png|tiff?|bmp|gif|webp)$/i.test(name);
-  }
+    const acceptanceDate = new Date(offerDetails.acceptanceDate);
+    const timeline = [];
 
-  // Dynamic PDF extractor using pdfjs-dist (legacy entry)
-  async function extractTextFromPDF(file: File): Promise<string> {
-    const arrayBuf = await file.arrayBuffer();
-    const pdfjs = await import("pdfjs-dist/legacy/build/pdf");
-    // Provide a worker src; in some setups you should bundle worker separately.
-    // This resolves to the CDN worker — change if you host your own.
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
-    pdfjs.GlobalWorkerOptions.workerSrc =
-      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
-    const loadingTask = pdfjs.getDocument({ data: arrayBuf });
-    const doc = await loadingTask.promise;
-    let full = "";
-    for (let i = 1; i <= doc.numPages; i++) {
-      const page = await doc.getPage(i);
-      const content = await page.getTextContent();
-      const strs = content.items.map((it: any) => ("str" in it ? it.str : ""));
-      full += strs.join(" ") + "\n\n";
-    }
-    return full;
-  }
+    // Standard real estate timeline calculations
+    const inspectionDeadline = new Date(acceptanceDate);
+    inspectionDeadline.setDate(acceptanceDate.getDate() + parseInt(offerDetails.inspectionPeriod || 10));
 
-  // Mammoth for docx
-  async function extractTextFromDocx(file: File): Promise<string> {
-    const arrayBuf = await file.arrayBuffer();
-    const mammoth = await import("mammoth");
-    const result = await mammoth.extractRawText({ arrayBuffer: arrayBuf });
-    return result.value || "";
-  }
+    const appraisalDeadline = new Date(acceptanceDate);
+    appraisalDeadline.setDate(acceptanceDate.getDate() + parseInt(offerDetails.appraisalPeriod || 21));
 
-  // Tesseract OCR for images (and scanned PDFs converted to image would be needed)
-  async function ocrImage(file: File): Promise<string> {
-    const { createWorker } = await import("tesseract.js");
-    const worker = createWorker({
-      logger: () => {
-        /* ignore logs in UI */
+    const financingDeadline = new Date(acceptanceDate);
+    financingDeadline.setDate(acceptanceDate.getDate() + parseInt(offerDetails.financingDeadline || 30));
+
+    const titleSearch = new Date(acceptanceDate);
+    titleSearch.setDate(acceptanceDate.getDate() + 7);
+
+    const finalWalkthrough = new Date(offerDetails.closingDate);
+    finalWalkthrough.setDate(finalWalkthrough.getDate() - 1);
+
+    timeline.push(
+      { task: 'Send Welcome Emails', date: new Date(acceptanceDate.getTime() + 24*60*60*1000), priority: 'high', responsible: 'Agent', agentAction: true },
+      { task: 'Order Title Commitment', date: new Date(acceptanceDate.getTime() + 24*60*60*1000), priority: 'high', responsible: 'Agent', agentAction: true },
+      { task: 'Coordinate with Lender', date: new Date(acceptanceDate.getTime() + 48*60*60*1000), priority: 'medium', responsible: 'Agent', agentAction: true },
+      { task: 'Inspection Period Ends', date: inspectionDeadline, priority: 'high', responsible: 'Buyer' },
+      { task: 'Follow up on Inspection Results', date: new Date(inspectionDeadline.getTime() + 24*60*60*1000), priority: 'medium', responsible: 'Agent', agentAction: true },
+      { task: 'Title Search Completion', date: titleSearch, priority: 'medium', responsible: 'Title Company' },
+      { task: 'Appraisal Deadline', date: appraisalDeadline, priority: 'high', responsible: 'Lender' },
+      { task: 'Monitor Financing Progress', date: new Date(financingDeadline.getTime() - 7*24*60*60*1000), priority: 'high', responsible: 'Agent', agentAction: true },
+      { task: 'Financing Approval Deadline', date: financingDeadline, priority: 'critical', responsible: 'Buyer/Lender' },
+      { task: 'Prepare Closing Checklist', date: new Date(finalWalkthrough.getTime() - 3*24*60*60*1000), priority: 'medium', responsible: 'Agent', agentAction: true },
+      { task: 'Final Walk-through', date: finalWalkthrough, priority: 'medium', responsible: 'Buyer' },
+      { task: 'Closing Date', date: new Date(offerDetails.closingDate), priority: 'critical', responsible: 'All Parties' }
+    );
+
+    timeline.sort((a, b) => a.date - b.date);
+    setGeneratedTimeline(timeline);
+    generateEmailTemplates();
+    setActiveTab('timeline');
+  };
+
+  const generateEmailTemplates = () => {
+    const templates = [
+      {
+        title: 'Welcome Email - Buyer',
+        subject: `Congratulations! Your offer on ${offerDetails.propertyAddress} has been accepted`,
+        body: `Dear ${offerDetails.buyerName},
+
+Congratulations! Your offer on ${offerDetails.propertyAddress} has been accepted for ${offerDetails.salePrice}.
+
+Here are your important upcoming deadlines:
+• Inspection Period: ${offerDetails.inspectionPeriod} days from acceptance
+• Financing Deadline: ${offerDetails.financingDeadline} days from acceptance
+• Closing Date: ${offerDetails.closingDate}
+
+Next steps:
+1. Schedule your home inspection immediately
+2. Contact your lender to begin the mortgage process
+3. Review all contract documents carefully
+
+HUD-Approved Housing Counseling Resources:
+If you need assistance with homeownership counseling, budgeting, or financial guidance, these HUD-approved agencies can help:
+
+• ACTS Housing - (414) 937-9295
+  Provides homeownership education and foreclosure prevention
+• UCC (United Community Center) - (414) 384-3100
+  Offers financial literacy and homebuyer education programs
+• HIR (Homeownership Initiative & Resources) - (414) 264-2622
+  Specializes in first-time homebuyer programs
+• Green Path Financial Wellness - (877) 337-3399
+  Comprehensive financial counseling and debt management
+
+We'll be in touch with detailed timeline and reminders.
+
+Best regards,
+Your Real Estate Team`
       },
+      {
+        title: 'Welcome Email - Seller',
+        subject: `Great news! Your property at ${offerDetails.propertyAddress} is under contract`,
+        body: `Dear ${offerDetails.sellerName},
+
+Excellent news! Your property at ${offerDetails.propertyAddress} is now under contract for ${offerDetails.salePrice}.
+
+Key dates to remember:
+• Buyer's inspection period: ${offerDetails.inspectionPeriod} days
+• Expected closing: ${offerDetails.closingDate}
+
+What to expect:
+1. The buyer will schedule an inspection within the next few days
+2. We may receive requests for repairs or credits
+3. Continue to maintain the property in good condition
+4. Keep all utilities on through closing
+
+We'll keep you updated throughout the process.
+
+Best regards,
+Your Real Estate Team`
+      },
+      {
+        title: 'Real Estate Agent - Internal Checklist',
+        subject: `Action Items: ${offerDetails.propertyAddress} Under Contract`,
+        body: `INTERNAL AGENT CHECKLIST - ${offerDetails.propertyAddress}
+
+CONTRACT DETAILS:
+• Property: ${offerDetails.propertyAddress}
+• Buyer: ${offerDetails.buyerName}
+• Seller: ${offerDetails.sellerName}
+• Sale Price: ${offerDetails.salePrice}
+• Acceptance Date: ${offerDetails.acceptanceDate}
+• Closing Date: ${offerDetails.closingDate}
+
+IMMEDIATE ACTION ITEMS (Within 24-48 hours):
+□ Send welcome emails to buyer and seller
+□ Order title commitment
+□ Coordinate with buyer's lender
+□ Schedule inspection with buyer
+□ Set up file with transaction coordinator
+□ Send contract to all parties' attorneys (if applicable)
+
+ONGOING DEADLINES TO MONITOR:
+□ Inspection Period: ${offerDetails.inspectionPeriod} days
+□ Financing Approval: ${offerDetails.financingDeadline} days
+□ Appraisal Completion: ${offerDetails.appraisalPeriod} days
+
+WEEKLY FOLLOW-UPS NEEDED:
+□ Buyer's financing progress
+□ Inspection results and repair negotiations
+□ Appraisal scheduling and results
+□ Title/survey issues resolution
+□ Closing preparations
+
+CLOSING PREPARATION (1 week before):
+□ Final walk-through scheduled
+□ Closing documents reviewed
+□ Funds verification completed
+□ Keys/garage remotes ready for transfer
+
+This checklist can be printed and kept in the transaction file.`
+      },
+      {
+        title: 'Inspection Reminder - 3 Days Before',
+        subject: 'Inspection Deadline Approaching - Action Required',
+        body: `Dear ${offerDetails.buyerName},
+
+This is a friendly reminder that your inspection period for ${offerDetails.propertyAddress} ends in 3 days.
+
+If you haven't scheduled your inspection yet, please do so immediately. If you have completed the inspection and need to request repairs or credits, please send your requests as soon as possible.
+
+Remember: If no inspection objections are submitted by the deadline, you waive your right to inspection-related negotiations.
+
+If you have questions about the inspection process or need guidance on evaluating inspection results, consider contacting these HUD-approved housing counseling agencies:
+
+• ACTS Housing - (414) 937-9295
+• UCC (United Community Center) - (414) 384-3100
+• HIR (Homeownership Initiative & Resources) - (414) 264-2622
+• Green Path Financial Wellness - (877) 337-3399
+
+Please let us know if you need any assistance.
+
+Best regards,
+Your Real Estate Team`
+      },
+      {
+        title: 'Financing Deadline Reminder',
+        subject: 'Financing Approval Deadline - 7 Days Remaining',
+        body: `Dear ${offerDetails.buyerName},
+
+This is an important reminder that your financing approval deadline for ${offerDetails.propertyAddress} is in 7 days.
+
+Please contact your lender immediately if you haven't received final approval. If you're experiencing any challenges with your loan process, these HUD-approved agencies can provide assistance:
+
+• Green Path Financial Wellness - (877) 337-3399
+  Mortgage and credit counseling
+• ACTS Housing - (414) 937-9295
+  Homeownership financing assistance
+• HIR (Homeownership Initiative & Resources) - (414) 264-2622
+  First-time buyer loan programs
+
+Time-sensitive action items:
+□ Contact lender for status update
+□ Provide any additional documentation requested
+□ Notify us immediately of any potential delays
+
+Failure to meet the financing deadline may result in contract cancellation.
+
+Best regards,
+Your Real Estate Team`
+      }
+    ];
+
+    setEmailTemplates(templates);
+  };
+
+  const formatDate = (date) => {
+    return date.toLocaleDateString('en-US', { 
+      weekday: 'short',
+      year: 'numeric', 
+      month: 'short', 
+      day: 'numeric' 
     });
-    await worker.load();
-    await worker.loadLanguage("eng");
-    await worker.initialize("eng");
-    const { data } = await worker.recognize(file);
-    await worker.terminate();
-    return data?.text ?? "";
-  }
+  };
 
-  // Basic heuristic parsing (improved)
-  function parseText(text: string): Partial<OfferDetails> {
-    const t = text.replace(/\r/g, "\n");
-    const lines = t.split(/\n+/).map((l) => l.trim()).filter(Boolean);
-
-    const parsed: Partial<OfferDetails> = {};
-
-    // Date patterns
-    const dateRegexes = [
-      /(\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s*\d{4})/i,
-      /(\b\d{1,2}\/\d{1,2}\/\d{2,4}\b)/,
-      /(\b\d{4}-\d{1,2}-\d{1,2}\b)/,
-    ];
-
-    function findDateNearKeywords(keywords: string[]) {
-      const joined = keywords.map((k) => k.toLowerCase());
-      for (let i = 0; i < lines.length; i++) {
-        const low = lines[i].toLowerCase();
-        if (joined.some((k) => low.includes(k))) {
-          const candidates = [lines[i], lines[i + 1], lines[i - 1]].filter(Boolean);
-          for (const c of candidates) {
-            for (const r of dateRegexes) {
-              const m = c.match(r);
-              if (m) return m[1];
-            }
-          }
-        }
-      }
-      // fallback: first date-like token in document
-      for (const line of lines) {
-        for (const r of dateRegexes) {
-          const m = line.match(r);
-          if (m) return m[1];
-        }
-      }
-      return undefined;
+  const getPriorityColor = (priority) => {
+    switch(priority) {
+      case 'critical': return 'bg-red-100 text-red-800 border-red-300';
+      case 'high': return 'bg-orange-100 text-orange-800 border-orange-300';
+      case 'medium': return 'bg-yellow-100 text-yellow-800 border-yellow-300';
+      default: return 'bg-blue-100 text-blue-800 border-blue-300';
     }
-
-    parsed.acceptanceDate = findDateNearKeywords(["acceptance", "accepted", "offer accepted", "date of acceptance"]);
-    parsed.closingDate = findDateNearKeywords(["closing", "close", "closing date"]);
-
-    // If acceptance date still missing, take the last chronological date in the document (often signature date)
-    if (!parsed.acceptanceDate) {
-      for (let i = lines.length - 1; i >= 0; i--) {
-        for (const r of dateRegexes) {
-          const m = lines[i].match(r);
-          if (m) {
-            parsed.acceptanceDate = parsed.acceptanceDate || m[1];
-            break;
-          }
-        }
-        if (parsed.acceptanceDate) break;
-      }
-    }
-
-    // Deadlines expressed as days (inspection period etc)
-    const daysRegex = /(\b\d{1,3})\s*(?:day|days)\b/i;
-    for (let i = 0; i < lines.length; i++) {
-      const low = lines[i].toLowerCase();
-      if (low.includes("inspection")) {
-        const m = lines[i].match(daysRegex) || lines[i + 1]?.match(daysRegex);
-        parsed.inspectionPeriod = m ? m[1] : parsed.inspectionPeriod;
-      }
-      if (low.includes("appraisal")) {
-        const m = lines[i].match(daysRegex) || lines[i + 1]?.match(daysRegex);
-        parsed.appraisalPeriod = m ? m[1] : parsed.appraisalPeriod;
-      }
-      if (low.includes("financing") || low.includes("loan")) {
-        const m = lines[i].match(daysRegex) || lines[i + 1]?.match(daysRegex);
-        parsed.financingDeadline = m ? m[1] : parsed.financingDeadline;
-      }
-    }
-
-    // Price detection: prefer explicit $ amounts, then numeric amounts, then a few common written amounts
-    const priceDollarRegex = /\$\s?([0-9\.,]{1,})/;
-    const priceNumericRegex = /\b([0-9]{1,3}(?:,[0-9]{3})+(?:\.\d{1,2})?)\b/;
-    const wordPriceMap: [RegExp, string][] = [
-      [/two hundred fifty thousand/i, "250,000.00"],
-      [/one hundred thousand/i, "100,000.00"],
-      [/one hundred twenty five thousand/i, "125,000.00"],
-      // add more patterns as needed
-    ];
-
-    for (const line of lines) {
-      const m = line.match(priceDollarRegex);
-      if (m) {
-        parsed.salePrice = "$" + m[1].replace(/\s/g, "");
-        break;
-      }
-    }
-    if (!parsed.salePrice) {
-      // look for numeric tokens that plausibly match a sale price (e.g., at least 5 digits)
-      for (const line of lines) {
-        const m = line.match(priceNumericRegex);
-        if (m && m[1].replace(/[^0-9]/g, "").length >= 5) {
-          parsed.salePrice = "$" + m[1];
-          break;
-        }
-      }
-    }
-    if (!parsed.salePrice) {
-      for (const [re, val] of wordPriceMap) {
-        if (t.match(re)) {
-          parsed.salePrice = "$" + val;
-          break;
-        }
-      }
-    }
-
-    // Buyer / Seller heuristics (improved)
-    for (let i = 0; i < lines.length; i++) {
-      const low = lines[i].toLowerCase();
-      if ((low.includes("the buyer") && lines[i+1]) || low.startsWith("buyer,")) {
-        // Common forms: "The Buyer,," or "The Buyer, <name>"
-        const candidate = lines[i+1] || lines[i].replace(/the buyer[:,]*/i,"").trim();
-        if (candidate) parsed.buyerName = parsed.buyerName || candidate;
-      }
-      if ((low.includes("seller") && lines[i+1]) || low.startsWith("seller,")) {
-        const candidate = lines[i+1] || lines[i].replace(/seller[:,]*/i,"").trim();
-        if (candidate) parsed.sellerName = parsed.sellerName || candidate;
-      }
-      if (!parsed.buyerName && low.match(/\b([A-Z][a-z]+(?:\s[A-Z][a-z]+){0,2})\b/) && low.includes("declan")) {
-        parsed.buyerName = parsed.buyerName || lines[i].trim();
-      }
-    }
-
-    // If still missing buyer/seller, scan for signature area near document end
-    if (!parsed.buyerName || !parsed.sellerName) {
-      for (let i = lines.length - 1; i >= Math.max(0, lines.length - 40); i--) {
-        const low = lines[i].toLowerCase();
-        if ((low.includes("buyer") || low.includes("buyer’s") || low.includes("buyer signature")) && lines[i+1]) {
-          parsed.buyerName = parsed.buyerName || lines[i+1].trim();
-        }
-        if ((low.includes("seller") || low.includes("seller’s") || low.includes("seller signature")) && lines[i+1]) {
-          parsed.sellerName = parsed.sellerName || lines[i+1].trim();
-        }
-      }
-    }
-
-    // Address detection: improved to capture lines with city/state/zip or comma-separated blocks
-    const addrRegex = /\d{1,5}\s+[\w\.\-]+\s+(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Lane|Ln|Court|Ct|Drive|Dr|Terrace|Ter|Place|Pl)[\w\s,.-]*\b(?:[A-Za-z]{2}\s*\d{5}|\d{5})?/i;
-    const simpleAddrRegex = /\d{1,5}\s+[\w\.\-]+\s+[A-Za-z]{2,}\b.*\d{5}/i;
-    for (const line of lines) {
-      const m = line.match(addrRegex) || line.match(simpleAddrRegex);
-      if (m) {
-        parsed.propertyAddress = m[0];
-        break;
-      }
-    }
-    // fallback: look for lines that include common city/state or "Property Address"
-    if (!parsed.propertyAddress) {
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].toLowerCase().includes("property address") && (lines[i+1] || lines[i].includes(":"))) {
-          parsed.propertyAddress = (lines[i].split(":")[1] || lines[i+1] || "").trim();
-          break;
-        }
-      }
-    }
-
-    return parsed;
-  }
-
-  // small helper: apply edits and generate a simple timeline (demo)
-  function generate() {
-    // Basic validation
-    if (!details.acceptanceDate) {
-      if (!confirm("No acceptance date parsed — continue?")) return;
-    }
-    // Caller callback
-    const timeline = buildTimeline(details);
-    onGenerate?.(timeline);
-    alert("Timeline generated (see console).");
-    console.log("Generated timeline:", timeline);
-    setTab("preview");
-  }
-
-  function buildTimeline(d: OfferDetails) {
-    // Very small demo timeline using parsed fields
-    const tasks: any[] = [];
-    const acc = d.acceptanceDate ? new Date(d.acceptanceDate) : new Date();
-    const addDays = (date: Date, n: number) => {
-      const dd = new Date(date);
-      dd.setDate(dd.getDate() + n);
-      return dd;
-    };
-    tasks.push({ task: "Accepted Offer", date: acc, priority: "critical" });
-    const insp = parseInt(d.inspectionPeriod || "0", 10) || 10;
-    tasks.push({ task: "Inspection Period Ends", date: addDays(acc, insp), priority: "high" });
-    const app = parseInt(d.appraisalPeriod || "0", 10) || 21;
-    tasks.push({ task: "Appraisal Deadline", date: addDays(acc, app), priority: "high" });
-    const fin = parseInt(d.financingDeadline || "0", 10) || 30;
-    tasks.push({ task: "Financing Approval Deadline", date: addDays(acc, fin), priority: "critical" });
-    if (d.closingDate) {
-      tasks.push({ task: "Closing Date", date: new Date(d.closingDate), priority: "critical" });
-    }
-    return tasks;
-  }
+  };
 
   return (
-    <div style={{ maxWidth: 900, margin: "1rem auto", fontFamily: "system-ui,Segoe UI,Roboto,Helvetica,Arial" }}>
-      <div style={{ padding: 12, borderRadius: 8, background: "#fff", boxShadow: "0 6px 20px rgba(0,0,0,.06)" }}>
-        <h2 style={{ margin: 0 }}>Accepted Offer — Upload & Extract</h2>
-        <nav style={{ marginTop: 12, display: "flex", gap: 8 }}>
-          {(["upload", "details", "preview"] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              style={{
-                padding: "6px 10px",
-                borderBottom: tab === t ? "2px solid #2563eb" : "2px solid transparent",
-                background: "transparent",
-                cursor: "pointer",
-              }}
-            >
-              {t}
-            </button>
-          ))}
-        </nav>
-
-        {tab === "upload" && (
-          <div style={{ textAlign: "center", padding: 28 }}>
-            <p>Upload the signed purchase agreement (PDF, DOCX, image)</p>
-            <input id="offer-upload" type="file" accept=".pdf,.doc,.docx,image/*" onChange={handleFileChange} />
-            {busy && <p>Processing…</p>}
-            {error && <p style={{ color: "red" }}>{error}</p>}
-            {rawText && (
-              <details style={{ textAlign: "left", marginTop: 12 }}>
-                <summary>Preview extracted text</summary>
-                <pre style={{ maxHeight: 240, overflow: "auto", background: "#f8fafc", padding: 8 }}>{rawText}</pre>
-              </details>
-            )}
-          </div>
-        )}
-
-        {tab === "details" && (
-          <div style={{ padding: 12 }}>
-            <h3>Offer Details (parsed — please confirm)</h3>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-              <label>
-                Acceptance Date
-                <input value={details.acceptanceDate || ""} onChange={(e) => setDetails({ ...details, acceptanceDate: e.target.value })} />
-              </label>
-              <label>
-                Closing Date
-                <input value={details.closingDate || ""} onChange={(e) => setDetails({ ...details, closingDate: e.target.value })} />
-              </label>
-              <label>
-                Inspection Period (days)
-                <input value={details.inspectionPeriod || ""} onChange={(e) => setDetails({ ...details, inspectionPeriod: e.target.value })} />
-              </label>
-              <label>
-                Appraisal Period (days)
-                <input value={details.appraisalPeriod || ""} onChange={(e) => setDetails({ ...details, appraisalPeriod: e.target.value })} />
-              </label>
-              <label>
-                Financing Deadline (days)
-                <input value={details.financingDeadline || ""} onChange={(e) => setDetails({ ...details, financingDeadline: e.target.value })} />
-              </label>
-              <label>
-                Sale Price
-                <input value={details.salePrice || ""} onChange={(e) => setDetails({ ...details, salePrice: e.target.value })} />
-              </label>
-              <label style={{ gridColumn: "1 / -1" }}>
-                Property Address
-                <input value={details.propertyAddress || ""} onChange={(e) => setDetails({ ...details, propertyAddress: e.target.value })} />
-              </label>
-              <label>
-                Buyer Name
-                <input value={details.buyerName || ""} onChange={(e) => setDetails({ ...details, buyerName: e.target.value })} />
-              </label>
-              <label>
-                Seller Name
-                <input value={details.sellerName || ""} onChange={(e) => setDetails({ ...details, sellerName: e.target.value })} />
-              </label>
+    <div className="max-w-6xl mx-auto p-6 bg-gray-50 min-h-screen">
+      <div className="bg-white rounded-lg shadow-lg">
+        <div className="border-b border-gray-200">
+          <div className="p-6">
+            <div className="flex items-center space-x-3">
+              <Home className="w-8 h-8 text-blue-600" />
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900">Real Estate AI Agent</h1>
+                <p className="text-gray-600">Post-Offer Management & Timeline Generator</p>
+              </div>
             </div>
-
-            <div style={{ marginTop: 12 }}>
-              <button onClick={generate} disabled={busy} style={{ padding: "8px 12px", background: "#2563eb", color: "#fff", border: "none", borderRadius: 6 }}>
-                Generate Timeline
+          </div>
+          
+          <nav className="flex space-x-8 px-6">
+            {['upload', 'details', 'timeline', 'emails'].map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`py-2 px-1 border-b-2 font-medium text-sm capitalize transition-colors ${
+                  activeTab === tab
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                {tab === 'upload' && <Upload className="w-4 h-4 inline mr-1" />}
+                {tab === 'details' && <FileText className="w-4 h-4 inline mr-1" />}
+                {tab === 'timeline' && <Calendar className="w-4 h-4 inline mr-1" />}
+                {tab === 'emails' && <Mail className="w-4 h-4 inline mr-1" />}
+                {tab}
               </button>
-              <button onClick={() => setTab("preview")} style={{ marginLeft: 8 }}>Preview Timeline</button>
-            </div>
-          </div>
-        )}
+            ))}
+          </nav>
+        </div>
 
-        {tab === "preview" && (
-          <div style={{ padding: 12 }}>
-            <h3>Timeline Preview</h3>
-            <pre style={{ background: "#f8fafc", padding: 8 }}>{JSON.stringify(buildTimeline(details), null, 2)}</pre>
-            <div style={{ marginTop: 8 }}>
-              <button onClick={() => setTab("details")}>Back</button>
+        <div className="p-6">
+          {activeTab === 'upload' && (
+            <div className="text-center py-12">
+              <Upload className="mx-auto h-12 w-12 text-gray-400" />
+              <h3 className="mt-2 text-sm font-medium text-gray-900">Upload Accepted Offer</h3>
+              <p className="mt-1 text-sm text-gray-500">
+                Upload the signed purchase agreement or accepted offer document
+              </p>
+              <div className="mt-6">
+                <input
+                  type="file"
+                  accept=".pdf,.doc,.docx"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                  id="offer-upload"
+                />
+                <label
+                  htmlFor="offer-upload"
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 cursor-pointer"
+                >
+                  <Upload className="w-4 h-4 mr-2" />
+                  Choose File
+                </label>
+              </div>
             </div>
-          </div>
-        )}
+          )}
+
+          {activeTab === 'details' && (
+            <div className="space-y-6">
+              <h3 className="text-lg font-medium text-gray-900">Enter Offer Details</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Property Address</label>
+                  <input
+                    type="text"
+                    value={offerDetails.propertyAddress}
+                    onChange={(e) => setOfferDetails({...offerDetails, propertyAddress: e.target.value})}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Sale Price</label>
+                  <input
+                    type="text"
+                    value={offerDetails.salePrice}
+                    onChange={(e) => setOfferDetails({...offerDetails, salePrice: e.target.value})}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Buyer Name</label>
+                  <input
+                    type="text"
+                    value={offerDetails.buyerName}
+                    onChange={(e) => setOfferDetails({...offerDetails, buyerName: e.target.value})}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Seller Name</label>
+                  <input
+                    type="text"
+                    value={offerDetails.sellerName}
+                    onChange={(e) => setOfferDetails({...offerDetails, sellerName: e.target.value})}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Acceptance Date</label>
+                  <input
+                    type="date"
+                    value={offerDetails.acceptanceDate}
+                    onChange={(e) => setOfferDetails({...offerDetails, acceptanceDate: e.target.value})}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Closing Date</label>
+                  <input
+                    type="date"
+                    value={offerDetails.closingDate}
+                    onChange={(e) => setOfferDetails({...offerDetails, closingDate: e.target.value})}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Inspection Period (days)</label>
+                  <input
+                    type="number"
+                    value={offerDetails.inspectionPeriod}
+                    onChange={(e) => setOfferDetails({...offerDetails, inspectionPeriod: e.target.value})}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="10"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">Appraisal Period (days)</label>
+                  <input
+                    type="number"
+                    value={offerDetails.appraisalPeriod}
+                    onChange={(e) => setOfferDetails({...offerDetails, appraisalPeriod: e.target.value})}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="21"
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700">Financing Deadline (days)</label>
+                  <input
+                    type="number"
+                    value={offerDetails.financingDeadline}
+                    onChange={(e) => setOfferDetails({...offerDetails, financingDeadline: e.target.value})}
+                    className="mt-1 block w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="30"
+                  />
+                </div>
+              </div>
+              <div className="pt-4">
+                <button
+                  onClick={calculateDeadlines}
+                  className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700"
+                >
+                  <Calendar className="w-5 h-5 mr-2" />
+                  Generate Timeline & Emails
+                </button>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'timeline' && (
+            <div className="space-y-6">
+              <div className="flex justify-between items-center">
+                <h3 className="text-lg font-medium text-gray-900">Transaction Timeline</h3>
+                <button
+                  onClick={() => window.print()}
+                  className="inline-flex items-center px-3 py-2 border border-gray-300 shadow-sm text-sm leading-4 font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                >
+                  Print Timeline
+                </button>
+              </div>
+              {generatedTimeline.length === 0 ? (
+                <p className="text-gray-500">Please fill out offer details and generate timeline first.</p>
+              ) : (
+                <div className="space-y-4">
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-md p-4">
+                    <h4 className="font-medium text-yellow-800">HUD-Approved Housing Counseling Agencies</h4>
+                    <p className="text-sm text-yellow-700 mt-1">Provide these resources to buyers who need financial guidance:</p>
+                    <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-yellow-800">
+                      <div>• ACTS Housing - (414) 937-9295</div>
+                      <div>• UCC - (414) 384-3100</div>
+                      <div>• HIR - (414) 264-2622</div>
+                      <div>• Green Path Financial - (877) 337-3399</div>
+                    </div>
+                  </div>
+                  {generatedTimeline.map((item, index) => (
+                    <div key={index} className={`flex items-start space-x-4 p-4 rounded-lg ${item.agentAction ? 'bg-blue-50 border-l-4 border-blue-400' : 'bg-gray-50'}`}>
+                      <Clock className="w-5 h-5 text-gray-400 mt-1" />
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between">
+                          <h4 className="font-medium text-gray-900">
+                            {item.task}
+                            {item.agentAction && <span className="ml-2 text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded">Agent Action</span>}
+                          </h4>
+                          <span className={`px-2 py-1 text-xs font-medium rounded border ${getPriorityColor(item.priority)}`}>
+                            {item.priority}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-600 mt-1">
+                          Due: {formatDate(item.date)} • Responsible: {item.responsible}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === 'emails' && (
+            <div className="space-y-6">
+              <h3 className="text-lg font-medium text-gray-900">Email Templates</h3>
+              {emailTemplates.length === 0 ? (
+                <p className="text-gray-500">Please generate timeline first to create email templates.</p>
+              ) : (
+                <div className="space-y-6">
+                  {emailTemplates.map((template, index) => (
+                    <div key={index} className="border border-gray-200 rounded-lg p-6">
+                      <div className="flex items-center justify-between mb-4">
+                        <h4 className="text-lg font-medium text-gray-900">{template.title}</h4>
+                        <button className="text-blue-600 hover:text-blue-800 text-sm font-medium">
+                          Copy Template
+                        </button>
+                      </div>
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">Subject:</label>
+                          <p className="text-sm bg-gray-50 p-2 rounded">{template.subject}</p>
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">Body:</label>
+                          <pre className="text-sm bg-gray-50 p-4 rounded whitespace-pre-wrap font-sans">
+                            {template.body}
+                          </pre>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
-}
+};
+
+export default RealEstateAgent;
