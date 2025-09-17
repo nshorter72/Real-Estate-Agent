@@ -4,7 +4,7 @@
   "version": "0.0.0",
     "scripts": {
     "dev": "vite",
-    "build": "vite build --base /Real-Estate-Agent/",
+    "build": "vite build --base ./",
     "preview": "vite preview"
   },
   "dependencies": {
