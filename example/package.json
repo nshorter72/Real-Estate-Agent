@@ -2,9 +2,9 @@
   "name": "real-estate-agent-example",
   "private": true,
   "version": "0.0.0",
-  "scripts": {
+    "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build --base /Real-Estate-Agent/",
     "preview": "vite preview"
   },
   "dependencies": {
