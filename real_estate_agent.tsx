@@ -20,12 +20,189 @@ const RealEstateAgent = () => {
 
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
-    if (file) {
-      setUploadedOffer(file);
-      // In a real app, you'd parse the PDF/document here
-      // For demo, we'll show a form to input details
-      setActiveTab('details');
+    if (!file) return;
+
+
+    setUploadedOffer(file);
+    // Immediately prefill propertyAddress with filename so the details view shows something
+    // while we attempt content extraction/heuristics asynchronously.
+    setOfferDetails((prev) => ({ ...prev, propertyAddress: file.name }));
+
+    // Helper: read file to text using best-effort handlers (docx -> mammoth, pdf -> pdfjs, fallback -> text)
+    const extractTextFromFile = async (f) => {
+      const name = f.name.toLowerCase();
+      const arrayBuffer = await f.arrayBuffer().catch(() => null);
+
+      // DOCX with mammoth
+      if (name.endsWith('.docx') && arrayBuffer) {
+        try {
+          const mammoth = await import('mammoth');
+          const res = await mammoth.extractRawText({ arrayBuffer });
+          if (res && res.value) return res.value;
+        } catch (_) { /* ignore and fallthrough */ }
+      }
+
+      // PDF with pdfjs (best-effort)
+      if (name.endsWith('.pdf') && arrayBuffer) {
+        try {
+          const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf');
+          const uint8 = new Uint8Array(arrayBuffer);
+          const loadingTask = pdfjsLib.getDocument({ data: uint8 });
+          const pdf = await loadingTask.promise;
+          let fullText = '';
+          const numPages = pdf.numPages || 0;
+          for (let i = 1; i <= numPages; i++) {
+            /* eslint-disable no-await-in-loop */
+            const page = await pdf.getPage(i);
+            const content = await page.getTextContent();
+            const pageText = content.items.map((it) => it.str).join(' ');
+            fullText += pageText + '\n';
+          }
+          if (fullText.trim()) return fullText;
+        } catch (_) { /* ignore and fallthrough */ }
+      }
+
+      // Fallback: try plain text reading
+      try {
+        const txt = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = reject;
+          reader.readAsText(f);
+        });
+        return txt;
+      } catch (_) {
+        return '';
+      }
+    };
+
+    // Heuristic parsing from raw text
+    const parseTextForFields = (text) => {
+      const result = {
+        propertyAddress: '',
+        salePrice: '',
+        buyerName: '',
+        sellerName: '',
+        acceptanceDate: '',
+        closingDate: '',
+        inspectionPeriod: '',
+        appraisalPeriod: '',
+        financingDeadline: ''
+      };
+
+      if (!text) return result;
+
+      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+
+      // Attempt address: look for a line with a number and a street type
+      const addrRegex = /\d{1,5}\s+[A-Za-z0-9.\s]+(?:St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Ln|Lane|Dr|Drive|Ct|Court|Way|Terrace|Place)\b/i;
+      const addrLine = lines.find((l) => addrRegex.test(l));
+      if (addrLine) result.propertyAddress = addrLine;
+
+      // Price: $1,234,567 or 1234567
+      const priceRegex = /\$?\s?((?:\d{1,3}(?:,\d{3})+)|\d+)(?:\.\d{2})?/;
+      for (const l of lines) {
+        const m = l.match(priceRegex);
+        if (m && Number(m[1].replace(/,/g, '')) > 1000) {
+          result.salePrice = (m[0].startsWith('$') ? m[0] : `$${m[1]}`);
+          break;
+        }
+      }
+
+      // Dates: try common formats
+      const dateRegexAll = /(\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b)|(\b\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}\b)/g;
+      const foundDates = [];
+      for (const l of lines) {
+        const m = l.match(dateRegexAll);
+        if (m) m.forEach((d) => foundDates.push(d));
+      }
+      if (foundDates.length) {
+        // heuristic: earliest found -> acceptance, latest -> closing (if plausible)
+        const parsed = foundDates.map((d) => {
+          const parsedDate = new Date(d);
+          return isNaN(parsedDate.getTime()) ? null : parsedDate;
+        }).filter(Boolean).sort((a,b) => a - b);
+
+        if (parsed.length) {
+          result.acceptanceDate = parsed[0].toISOString().slice(0,10); // yyyy-mm-dd for input[type=date]
+          if (parsed.length > 1) result.closingDate = parsed[parsed.length-1].toISOString().slice(0,10);
+        }
+      }
+
+      // Inspection / appraisal / financing periods: look for "inspection" + number
+      const periodRegex = /inspection[^0-9\n\r]{0,20}(\d{1,3})\b/i;
+      const appRegex = /apprais(?:al|e)[^\d\n\r]{0,20}(\d{1,3})\b/i;
+      const finRegex = /financ(?:ing|e)[^\d\n\r]{0,20}(\d{1,3})\b/i;
+
+      for (const l of lines) {
+        const mi = l.match(periodRegex);
+        if (mi && !result.inspectionPeriod) result.inspectionPeriod = mi[1];
+        const ma = l.match(appRegex);
+        if (ma && !result.appraisalPeriod) result.appraisalPeriod = ma[1];
+        const mf = l.match(finRegex);
+        if (mf && !result.financingDeadline) result.financingDeadline = mf[1];
+      }
+
+      // Names: look for "Buyer" / "Seller" labels
+      const buyerRegex = /\bBuyer[:\s\-]{0,3}([A-Z][A-Za-z ,.'-]{2,})/i;
+      const sellerRegex = /\bSeller[:\s\-]{0,3}([A-Z][A-Za-z ,.'-]{2,})/i;
+      for (const l of lines) {
+        const mb = l.match(buyerRegex);
+        if (mb && !result.buyerName) result.buyerName = mb[1].trim();
+        const ms = l.match(sellerRegex);
+        if (ms && !result.sellerName) result.sellerName = ms[1].trim();
+      }
+
+      // Fallback: try to infer names from lines containing "Buyer" or "Seller"
+      if (!result.buyerName) {
+        const line = lines.find((l) => /\bBuyer\b/i && /[A-Z][a-z]+/g.test(l));
+        if (line) {
+          const tokens = line.split(/[:\-]/).pop().trim();
+          if (tokens && tokens.length < 60) result.buyerName = tokens;
+        }
+      }
+      if (!result.sellerName) {
+        const line = lines.find((l) => /\bSeller\b/i && /[A-Z][a-z]+/g.test(l));
+        if (line) {
+          const tokens = line.split(/[:\-]/).pop().trim();
+          if (tokens && tokens.length < 60) result.sellerName = tokens;
+        }
+      }
+
+      return result;
+    };
+
+    try {
+      const rawText = await extractTextFromFile(file);
+      const parsed = parseTextForFields(rawText || file.name || '');
+
+      // If parser returned any useful value, merge it; otherwise fall back to filename
+      const hasParsedValues = Object.values(parsed || {}).some((v) => v !== undefined && v !== null && String(v).trim() !== '');
+
+      if (hasParsedValues) {
+        setOfferDetails((prev) => ({
+          ...prev,
+          ...(parsed.propertyAddress ? { propertyAddress: parsed.propertyAddress } : {}),
+          ...(parsed.salePrice ? { salePrice: parsed.salePrice } : {}),
+          ...(parsed.buyerName ? { buyerName: parsed.buyerName } : {}),
+          ...(parsed.sellerName ? { sellerName: parsed.sellerName } : {}),
+          ...(parsed.acceptanceDate ? { acceptanceDate: parsed.acceptanceDate } : {}),
+          ...(parsed.closingDate ? { closingDate: parsed.closingDate } : {}),
+          ...(parsed.inspectionPeriod ? { inspectionPeriod: parsed.inspectionPeriod } : {}),
+          ...(parsed.appraisalPeriod ? { appraisalPeriod: parsed.appraisalPeriod } : {}),
+          ...(parsed.financingDeadline ? { financingDeadline: parsed.financingDeadline } : {})
+        }));
+      } else {
+        // No useful parse results — use filename as a minimal prefill so the user sees something
+        setOfferDetails((prev) => ({ ...prev, propertyAddress: file.name }));
+      }
+    } catch (err) {
+      // If parsing throws, fall back to minimal prefill (filename -> property)
+      setOfferDetails((prev) => ({ ...prev, propertyAddress: file.name }));
     }
+
+    // Show the details tab so the user can review / correct any fields
+    setActiveTab('details');
   };
 
   const calculateDeadlines = () => {
