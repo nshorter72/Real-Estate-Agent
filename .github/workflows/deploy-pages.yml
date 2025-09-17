@@ -26,7 +26,8 @@ jobs:
           cache: "npm"
 
       - name: Install dependencies
-        run: npm ci
+        # npm ci requires a lockfile; use npm install in CI when none exists.
+        run: npm install
 
       - name: Build
         run: npm run build
