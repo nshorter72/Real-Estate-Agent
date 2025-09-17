@@ -3,7 +3,6 @@ name: Build and Deploy to GitHub Pages
 on:
   push:
     branches:
-      - gh-pages
       - main
   workflow_dispatch:
 
@@ -23,7 +22,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 18
-          cache: "npm"
 
       - name: Install dependencies
         # npm ci requires a lockfile; use npm install in CI when none exists.
