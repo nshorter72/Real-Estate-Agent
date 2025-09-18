@@ -9,9 +9,15 @@
     "dist"
   ],
   "scripts": {
-    "build": "node ./node_modules/tsup/dist/cli.js src/index.ts --format cjs,esm --dts",
-    "build:watch": "node ./node_modules/tsup/dist/cli.js src/index.ts --watch --format cjs,esm --dts",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
     "example:dev": "cd example && npm install && npm run dev"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "lucide-react": "^0.270.0"
   },
   "peerDependencies": {
     "react": ">=17",
@@ -24,8 +30,9 @@
   },
   "homepage": "https://nshorter72.github.io/Real-Estate-Agent",
   "devDependencies": {
+    "vite": "^5.0.0",
+    "@vitejs/plugin-react": "^4.0.0",
     "typescript": "^5.2.2",
-    "tsup": "^6.7.0",
     "@types/react": "^18.2.21",
     "@types/react-dom": "^18.2.7"
   },
