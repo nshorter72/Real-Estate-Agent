@@ -41,34 +41,88 @@ export const RealEstateAgent: React.FC<{ onGenerate?: () => void }> = ({ onGener
       const name = f.name.toLowerCase();
       const arrayBuffer = await f.arrayBuffer().catch(() => null);
 
+      // quick diagnostics
+      try {
+        // eslint-disable-next-line no-console
+        console.debug('[RealEstateAgent] uploadInfo:', { name: f.name, type: f.type, size: f.size, arrayBufferBytes: arrayBuffer ? (arrayBuffer.byteLength ?? null) : null });
+      } catch (_) { /* ignore */ }
+
+      // DOCX extraction (mammoth)
       if (name.endsWith('.docx') && arrayBuffer) {
         try {
           const mammoth = await import('mammoth');
           // mammoth.extractRawText expects a buffer-like; use as any to avoid bundler typing issues
           const res = await (mammoth as any).extractRawText({ arrayBuffer });
           if (res && res.value) return String(res.value);
-        } catch (_) { /* ignore and continue */ }
+        } catch (err) { 
+          // eslint-disable-next-line no-console
+          console.debug('[RealEstateAgent] mammoth failed:', (err as any)?.message ?? err);
+        }
       }
 
+      // PDF extraction: try multiple strategies (data buffer, object URL)
       if (name.endsWith('.pdf') && arrayBuffer) {
         try {
           const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf');
-          const uint8 = new Uint8Array(arrayBuffer);
-          const loadingTask = (pdfjsLib as any).getDocument({ data: uint8 });
-          const pdf = await loadingTask.promise;
-          let fullText = '';
-          const numPages = typeof pdf.numPages === 'number' ? pdf.numPages : 0;
-          for (let i = 1; i <= numPages; i++) {
-            /* eslint-disable no-await-in-loop */
-            const page = await pdf.getPage(i);
-            const content = await page.getTextContent();
-            const pageText = (content.items || []).map((it: any) => it.str).join(' ');
-            fullText += pageText + '\n';
+          // set workerSrc early and log current value
+          try {
+            (pdfjsLib as any).GlobalWorkerOptions.workerSrc = (pdfjsLib as any).GlobalWorkerOptions?.workerSrc || 'https://unpkg.com/pdfjs-dist/build/pdf.worker.min.js';
+            // eslint-disable-next-line no-console
+            console.debug('[RealEstateAgent] pdfjs workerSrc set to', (pdfjsLib as any).GlobalWorkerOptions.workerSrc);
+          } catch (wErr) {
+            // eslint-disable-next-line no-console
+            console.debug('[RealEstateAgent] setting pdfjs workerSrc failed:', (wErr as any)?.message ?? wErr);
           }
-          if (fullText.trim()) return fullText;
-        } catch (_) { /* ignore and continue */ }
+
+          try {
+            const uint8 = new Uint8Array(arrayBuffer);
+            const loadingTask = (pdfjsLib as any).getDocument({ data: uint8 });
+            const pdf = await loadingTask.promise;
+            let fullText = '';
+            const numPages = typeof pdf.numPages === 'number' ? pdf.numPages : 0;
+            for (let i = 1; i <= numPages; i++) {
+              /* eslint-disable no-await-in-loop */
+              const page = await pdf.getPage(i);
+              const content = await page.getTextContent();
+              const pageText = (content.items || []).map((it: any) => it.str).join(' ');
+              fullText += pageText + '\n';
+            }
+            if (fullText.trim()) return fullText;
+            // eslint-disable-next-line no-console
+            console.debug('[RealEstateAgent] pdfjs extracted no text from data buffer');
+          } catch (innerErr) {
+            // fallback to object URL approach if data buffer approach fails
+            // eslint-disable-next-line no-console
+            console.debug('[RealEstateAgent] pdfjs data-buffer extraction failed:', (innerErr as any)?.message ?? innerErr);
+            try {
+              const url = URL.createObjectURL(f);
+              const loadingTask2 = (pdfjsLib as any).getDocument({ url });
+              const pdf2 = await loadingTask2.promise;
+              let fullText2 = '';
+              const numPages2 = typeof pdf2.numPages === 'number' ? pdf2.numPages : 0;
+              for (let i = 1; i <= numPages2; i++) {
+                /* eslint-disable no-await-in-loop */
+                const page = await pdf2.getPage(i);
+                const content = await page.getTextContent();
+                const pageText = (content.items || []).map((it: any) => it.str).join(' ');
+                fullText2 += pageText + '\n';
+              }
+              URL.revokeObjectURL(url);
+              if (fullText2.trim()) return fullText2;
+              // eslint-disable-next-line no-console
+              console.debug('[RealEstateAgent] pdfjs extracted no text from object URL');
+            } catch (urlErr) {
+              // eslint-disable-next-line no-console
+              console.debug('[RealEstateAgent] pdfjs extraction failed:', (urlErr as any)?.message ?? urlErr);
+            }
+          }
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.debug('[RealEstateAgent] pdfjs import failed:', (err as any)?.message ?? err);
+        }
       }
 
+      // Fallback: try reading as text (some environments will return PDF bytes here)
       try {
         const txt = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
@@ -76,8 +130,129 @@ export const RealEstateAgent: React.FC<{ onGenerate?: () => void }> = ({ onGener
           reader.onerror = reject;
           reader.readAsText(f);
         });
+
+        // If readAsText returned raw PDF bytes (starts with %PDF) try to extract with pdfjs if available
+        if (typeof txt === 'string' && txt.trim().startsWith('%PDF')) {
+          // eslint-disable-next-line no-console
+          const sample = txt.slice(0, 1000);
+          console.debug('[RealEstateAgent] extracted raw PDF bytes; length:', txt.length, 'sample:', sample);
+          // first attempt pdfjs object-URL extraction (again) in case earlier paths failed
+          try {
+            const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf');
+            try {
+              (pdfjsLib as any).GlobalWorkerOptions.workerSrc = (pdfjsLib as any).GlobalWorkerOptions?.workerSrc || 'https://unpkg.com/pdfjs-dist/build/pdf.worker.min.js';
+              // eslint-disable-next-line no-console
+              console.debug('[RealEstateAgent] pdfjs workerSrc set to', (pdfjsLib as any).GlobalWorkerOptions.workerSrc);
+            } catch (_) { /* ignore */ }
+            const url = URL.createObjectURL(f);
+            const loadingTask = (pdfjsLib as any).getDocument({ url });
+            const pdf = await loadingTask.promise;
+            let fullText = '';
+            const numPages = typeof pdf.numPages === 'number' ? pdf.numPages : 0;
+            for (let i = 1; i <= numPages; i++) {
+              /* eslint-disable no-await-in-loop */
+              const page = await pdf.getPage(i);
+              const content = await page.getTextContent();
+              const pageText = (content.items || []).map((it: any) => it.str).join(' ');
+              fullText += pageText + '\n';
+            }
+            URL.revokeObjectURL(url);
+            if (fullText.trim()) return fullText;
+            // eslint-disable-next-line no-console
+            console.debug('[RealEstateAgent] pdfjs fallback extracted no text');
+          } catch (pdfErr) {
+            // eslint-disable-next-line no-console
+            console.debug('[RealEstateAgent] pdfjs fallback failed:', (pdfErr as any)?.message ?? pdfErr);
+          }
+
+            // If pdfjs couldn't extract text, attempt OCR via tesseract.js by rendering pages to images
+          try {
+            // eslint-disable-next-line no-console
+            console.debug('[RealEstateAgent] attempting OCR fallback with tesseract.js');
+            const { createWorker } = await import('tesseract.js');
+            // createWorker implementations vary; await the call to ensure we have the worker instance
+            const worker = await (createWorker as any)({
+              logger: (m: any) => {
+                // eslint-disable-next-line no-console
+                console.debug('[RealEstateAgent][tesseract]', m);
+              }
+            });
+            await (worker as any).load();
+            await (worker as any).loadLanguage('eng');
+            await (worker as any).initialize('eng');
+
+            // render each PDF page to canvas and run OCR
+            try {
+              const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf');
+              try {
+                (pdfjsLib as any).GlobalWorkerOptions.workerSrc = (pdfjsLib as any).GlobalWorkerOptions?.workerSrc || 'https://unpkg.com/pdfjs-dist/build/pdf.worker.min.js';
+              } catch (_) { /* ignore */ }
+
+              const url = URL.createObjectURL(f);
+              const loadingTask = (pdfjsLib as any).getDocument({ url });
+              const pdf = await loadingTask.promise;
+              const numPages = typeof pdf.numPages === 'number' ? pdf.numPages : 0;
+              let ocrText = '';
+
+              for (let p = 1; p <= numPages; p++) {
+                /* eslint-disable no-await-in-loop */
+                const page = await pdf.getPage(p);
+                const viewport = page.getViewport({ scale: 2.0 });
+                // create canvas
+                const canvas = (typeof OffscreenCanvas !== 'undefined')
+                  ? (new OffscreenCanvas(viewport.width, viewport.height) as any)
+                  : (document.createElement('canvas') as HTMLCanvasElement);
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+                const renderContext = {
+                  canvasContext: (canvas as any).getContext ? (canvas as any).getContext('2d') : null,
+                  viewport
+                };
+                if (!renderContext.canvasContext) {
+                  // eslint-disable-next-line no-console
+                  console.debug('[RealEstateAgent] unable to get canvas context for OCR rendering; skipping page', p);
+                  continue;
+                }
+                await page.render(renderContext).promise;
+                // convert canvas to data URL
+                let dataUrl: string;
+                if (typeof (canvas as any).convertToBlob === 'function') {
+                  const blob = await (canvas as any).convertToBlob();
+                  dataUrl = await new Promise<string>((resolve) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(String(reader.result ?? ''));
+                    reader.readAsDataURL(blob);
+                  });
+                } else {
+                  dataUrl = (canvas as HTMLCanvasElement).toDataURL('image/png');
+                }
+
+                const { data: { text } } = await worker.recognize(dataUrl);
+                ocrText += (text || '') + '\n';
+              }
+
+              await worker.terminate();
+              URL.revokeObjectURL(url);
+              if (ocrText.trim()) return ocrText;
+              // eslint-disable-next-line no-console
+              console.debug('[RealEstateAgent] OCR returned no text');
+            } catch (ocrErr) {
+              // eslint-disable-next-line no-console
+              console.debug('[RealEstateAgent] OCR page render failed:', (ocrErr as any)?.message ?? ocrErr);
+              try {
+                await (await import('tesseract.js')).createWorker().then(w => w.terminate());
+              } catch (_) { /* ignore */ }
+            }
+          } catch (tessErr) {
+            // eslint-disable-next-line no-console
+            console.debug('[RealEstateAgent] tesseract import/ocr failed:', (tessErr as any)?.message ?? tessErr);
+          }
+        }
+
         return txt;
-      } catch (_) {
+      } catch (readErr) {
+        // eslint-disable-next-line no-console
+        console.debug('[RealEstateAgent] readAsText failed:', (readErr as any)?.message ?? readErr);
         return '';
       }
     };

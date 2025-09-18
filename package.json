@@ -15,17 +15,17 @@
     "example:dev": "cd example && npm install && npm run dev"
   },
   "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "lucide-react": "^0.270.0",
+    "lucide-react": ">=0",
     "mammoth": "^1.4.21",
     "pdfjs-dist": "^3.6.172",
-    "tesseract.js": "^4.0.3"
-  },
-  "peerDependencies": {
     "react": ">=17",
     "react-dom": ">=17",
-    "lucide-react": ">=0"
+    "tesseract.js": "^4.1.4"
+  },
+  "peerDependencies": {
+    "lucide-react": ">=0",
+    "react": ">=17",
+    "react-dom": ">=17"
   },
   "repository": {
     "type": "git",
@@ -33,11 +33,11 @@
   },
   "homepage": "https://nshorter72.github.io/Real-Estate-Agent",
   "devDependencies": {
-    "vite": "^5.0.0",
+    "@types/react": "^18.2.21",
+    "@types/react-dom": "^18.2.7",
     "@vitejs/plugin-react": "^4.0.0",
     "typescript": "^5.2.2",
-    "@types/react": "^18.2.21",
-    "@types/react-dom": "^18.2.7"
+    "vite": "^5.0.0"
   },
   "keywords": [
     "react",
