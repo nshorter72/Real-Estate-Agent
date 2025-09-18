@@ -30,10 +30,11 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Upload artifact for GitHub Pages
-        uses: actions/upload-pages-artifact@v1
+      - name: Deploy to GitHub Pages (peaceiris)
+        uses: peaceiris/actions-gh-pages@v3
         with:
-          path: ./dist
-
-      - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v1
+          # Use a personal access token stored in repository secrets (create secret PAGES_PAT)
+          personal_token: ${{ secrets.PAGES_PAT }}
+          publish_dir: ./dist
+          publish_branch: gh-pages
+          allow_empty_commit: false
