@@ -24,8 +24,8 @@ jobs:
           node-version: 18
 
       - name: Install dependencies
-        # npm ci requires a lockfile; use npm install in CI when none exists.
-        run: npm install
+        # Ensure devDependencies (e.g. build tools like tsup) are installed in CI.
+        run: npm install --include=dev
 
       - name: Build
         run: npm run build
