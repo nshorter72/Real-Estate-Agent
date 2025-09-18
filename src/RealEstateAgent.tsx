@@ -97,105 +97,155 @@ export const RealEstateAgent: React.FC<{ onGenerate?: () => void }> = ({ onGener
 
       if (!text) return result;
 
+      // Work with both line-oriented and whole-text heuristics
       const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const whole = text.replace(/\s+/g, ' ').trim();
 
-      // ADDRESS
+      // ADDRESS: try line-first, then whole-text search
       const addrRegex = /\d{1,5}\s+[A-Za-z0-9.\s]+(?:St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road|Ln|Lane|Dr|Drive|Ct|Court|Way|Terrace|Place)\b/i;
       const addrLine = lines.find((l) => addrRegex.test(l));
+      const addrWhole = whole.match(addrRegex)?.[0];
       if (addrLine) result.propertyAddress = addrLine;
+      else if (addrWhole) result.propertyAddress = addrWhole;
 
-      // PRICE
-      const priceRegex = /\$?\s?((?:\d{1,3}(?:,\d{3})+)|\d+)(?:\.\d{2})?/;
-      for (const l of lines) {
-        const m = l.match(priceRegex);
-        if (m && Number(m[1].replace(/,/g, '')) > 1000) {
-          result.salePrice = (m[0].trim().startsWith('$') ? m[0].trim() : `$${m[1].trim()}`);
-          break;
+      // PRICE: look for $... or large numbers; prefer lines containing "price" or "sale"
+      const priceRegex = /\$?\s?((?:\d{1,3}(?:,\d{3})+)|\d{4,})(?:\.\d{2})?/g;
+      const prioritized = lines.concat([whole]);
+      for (const l of prioritized) {
+        const m = Array.from(l.matchAll(priceRegex));
+        if (m.length) {
+          // pick first plausible large number
+          const found = m.map((x) => x[0]).find((s) => {
+            const n = Number(String(s).replace(/[^0-9]/g, ''));
+            return !Number.isNaN(n) && n > 1000;
+          });
+          if (found) {
+            result.salePrice = found.toString().trim().startsWith('$') ? found.toString().trim() : `$${found.toString().replace(/[^\d]/g, '')}`;
+            break;
+          }
         }
       }
 
-      // DATES - include MM/DD/YYYY, YYYY-MM-DD and Month name formats like "September 1, 2025"
+      // DATES: numeric, month-name, and label+next-line patterns
       const numericDateRegex = /(\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b)|(\b\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}\b)/g;
-      const monthNameRegex = /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+\d{4}\b/i;
-      const foundDates: string[] = [];
+      const monthNameRegex = /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+\d{4}\b/ig;
+      const foundDates: Date[] = [];
+
+      // scan lines and whole text
+      const collectDateStrings = (s: string) => {
+        const out: string[] = [];
+        const mm = Array.from((s.matchAll(monthNameRegex)));
+        mm.forEach(x => out.push(String(x[0])));
+        const nn = Array.from((s.matchAll(numericDateRegex)));
+        nn.forEach(x => out.push(String(x[0])));
+        return out;
+      };
 
       for (let i = 0; i < lines.length; i++) {
         const l = lines[i];
-        let m = l.match(numericDateRegex);
-        if (m) m.forEach((d) => foundDates.push(d));
-        const mm = l.match(monthNameRegex);
-        if (mm) mm.forEach((d) => foundDates.push(d));
-        // Also check if a line is just "Acceptance Date" and the next line is a date
+        // label + next-line
         if (/\bAcceptance Date\b/i.test(l) && i + 1 < lines.length) {
-          foundDates.push(lines[i + 1]);
+          collectDateStrings(lines[i + 1]).forEach(ds => {
+            const d = new Date(ds); if (!isNaN(d.getTime())) foundDates.push(d);
+          });
         }
         if (/\bClosing Date\b/i.test(l) && i + 1 < lines.length) {
-          foundDates.push(lines[i + 1]);
+          collectDateStrings(lines[i + 1]).forEach(ds => {
+            const d = new Date(ds); if (!isNaN(d.getTime())) foundDates.push(d);
+          });
         }
+        collectDateStrings(l).forEach(ds => {
+          const d = new Date(ds); if (!isNaN(d.getTime())) foundDates.push(d);
+        });
       }
+      // whole-text fallback
+      collectDateStrings(whole).forEach(ds => {
+        const d = new Date(ds); if (!isNaN(d.getTime())) foundDates.push(d);
+      });
 
       if (foundDates.length) {
-        const parsedDates = foundDates
-          .map((d) => {
-            // Normalize month-name dates by letting JS Date parse them
-            const parsedDate = new Date(d);
-            return isNaN(parsedDate.getTime()) ? null : parsedDate;
-          })
-          .filter((d): d is Date => d instanceof Date && !isNaN(d.getTime()))
-          .sort((a, b) => a.getTime() - b.getTime());
-        if (parsedDates.length) {
-          result.acceptanceDate = parsedDates[0].toISOString().slice(0, 10);
-          if (parsedDates.length > 1) result.closingDate = parsedDates[parsedDates.length - 1].toISOString().slice(0, 10);
-        }
+        const parsedDates = foundDates.sort((a, b) => a.getTime() - b.getTime());
+        result.acceptanceDate = parsedDates[0].toISOString().slice(0, 10);
+        if (parsedDates.length > 1) result.closingDate = parsedDates[parsedDates.length - 1].toISOString().slice(0, 10);
       }
 
-      // PERIODS: handle "Inspection: 10 days", "Inspection Period - 10 days", or "Inspection 10"
-      const periodRegex = /inspection[^0-9\n\r]{0,20}(\d{1,3})\b/i;
-      const appRegex = /apprais(?:al|e)[^\d\n\r]{0,20}(\d{1,3})\b/i;
-      const finRegex = /financ(?:ing|e)[^\d\n\r]{0,20}(\d{1,3})\b/i;
+      // PERIODS: global regex over whole text (covers many formats)
+      const inspectionGlobal = whole.match(/inspection(?: period)?[:\s\-]*?(\d{1,3})\b/i);
+      const appraisalGlobal = whole.match(/apprais(?:al|e)(?: period)?[:\s\-]*?(\d{1,3})\b/i);
+      const financingGlobal = whole.match(/financ(?:ing|e)(?: deadline| period)?[:\s\-]*?(\d{1,3})\b/i);
+      if (inspectionGlobal && !result.inspectionPeriod) result.inspectionPeriod = inspectionGlobal[1];
+      if (appraisalGlobal && !result.appraisalPeriod) result.appraisalPeriod = appraisalGlobal[1];
+      if (financingGlobal && !result.financingDeadline) result.financingDeadline = financingGlobal[1];
 
+      // NAMES: aggressive multi-strategy approach
+      // 1) direct labels "Buyer: John Doe" / "Buyer Name: John Doe"
+      const buyerRegex = /\bBuyer(?: Name)?[:\s\-]{0,6}([A-Z][A-Za-z ,.'\-]{2,120})/i;
+      const sellerRegex = /\bSeller(?: Name)?[:\s\-]{0,6}([A-Z][A-Za-z ,.'\-]{2,120})/i;
+      const buyerMatch = whole.match(buyerRegex);
+      const sellerMatch = whole.match(sellerRegex);
+      if (buyerMatch) result.buyerName = buyerMatch[1].trim();
+      if (sellerMatch) result.sellerName = sellerMatch[1].trim();
+
+      // 2) label + next-line patterns already handled earlier per-line — check lines for next-line names
       for (let i = 0; i < lines.length; i++) {
         const l = lines[i];
-        const mi = l.match(periodRegex) || (/\bInspection Period\b/i.test(l) && (lines[i + 1] || '').match(/\d{1,3}/));
-        if (mi && !result.inspectionPeriod) result.inspectionPeriod = (mi[1] || (mi as any)[0] || '').toString().replace(/\D/g, '');
-        const ma = l.match(appRegex) || (/\bAppraisal Period\b/i.test(l) && (lines[i + 1] || '').match(/\d{1,3}/));
-        if (ma && !result.appraisalPeriod) result.appraisalPeriod = (ma[1] || (ma as any)[0] || '').toString().replace(/\D/g, '');
-        const mf = l.match(finRegex) || (/\bFinancing Deadline\b/i.test(l) && (lines[i + 1] || '').match(/\d{1,3}/));
-        if (mf && !result.financingDeadline) result.financingDeadline = (mf[1] || (mf as any)[0] || '').toString().replace(/\D/g, '');
-      }
-
-      // NAMES: try direct "Buyer: John Doe" or label + next-line pattern
-      const buyerRegex = /\bBuyer(?: Name)?[:\s\-]{0,3}([A-Z][A-Za-z ,.'-]{2,})/i;
-      const sellerRegex = /\bSeller(?: Name)?[:\s\-]{0,3}([A-Z][A-Za-z ,.'-]{2,})/i;
-      for (let i = 0; i < lines.length; i++) {
-        const l = lines[i];
-        const mb = l.match(buyerRegex);
-        if (mb && !result.buyerName) result.buyerName = mb[1].trim();
-        else if (!result.buyerName && /\bBuyer\b/i.test(l) && i + 1 < lines.length && /^[A-Z][A-Za-z ,.'-]{2,}$/.test(lines[i + 1])) {
-          result.buyerName = lines[i + 1].trim();
+        if (!result.buyerName && /\bBuyer\b/i.test(l) && i + 1 < lines.length) {
+          const nxt = lines[i + 1].trim();
+          if (/^[A-Z][A-Za-z ,.'\-]{2,120}$/.test(nxt)) result.buyerName = nxt;
         }
-
-        const ms = l.match(sellerRegex);
-        if (ms && !result.sellerName) result.sellerName = ms[1].trim();
-        else if (!result.sellerName && /\bSeller\b/i.test(l) && i + 1 < lines.length && /^[A-Z][A-Za-z ,.'-]{2,}$/.test(lines[i + 1])) {
-          result.sellerName = lines[i + 1].trim();
+        if (!result.sellerName && /\bSeller\b/i.test(l) && i + 1 < lines.length) {
+          const nxt = lines[i + 1].trim();
+          if (/^[A-Z][A-Za-z ,.'\-]{2,120}$/.test(nxt)) result.sellerName = nxt;
         }
       }
 
-      // Extra fallback: sometimes names appear with "Buyer" and a name on same line after commas
+      // 3) signature or block heuristics: find nearby capitalized 2-word chunks after keywords like "Buyer" or "Buyer Signature"
+      const signatureRegex = /\b(Buyer|Buyer Signature|Buyer Name|Seller|Seller Signature|Seller Name)\b[:\s\-]{0,6}([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})/i;
+      // aggressive context search: up to 60 chars after keyword
+      const contextBuyer = whole.match(/\bBuyer\b[\s\-_.,:;]{0,60}([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})/i);
+      const contextSeller = whole.match(/\bSeller\b[\s\-_.,:;]{0,60}([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})/i);
+      if (contextBuyer && !result.buyerName) result.buyerName = contextBuyer[1].trim();
+      if (contextSeller && !result.sellerName) result.sellerName = contextSeller[1].trim();
+      const sigMatch = whole.match(new RegExp(signatureRegex, 'gi'));
+      if (sigMatch && !result.buyerName) {
+        const m = signatureRegex.exec(whole);
+        if (m && /Buyer/i.test(m[1])) result.buyerName = (m[2] || '').trim();
+      }
+      if (sigMatch && !result.sellerName) {
+        const m = signatureRegex.exec(whole);
+        if (m && /Seller/i.test(m[1])) result.sellerName = (m[2] || '').trim();
+      }
+
+      // 4) fallback: look for lines that have 2 capitalized words (likely names) near words "Buyer" or "Seller"
       if (!result.buyerName) {
-        const line = lines.find((l) => /\bBuyer\b/i.test(l) && /[A-Z][a-z]+/.test(l));
-        if (line) {
-          const tokens = line.split(/Buyer[:\-]/i).pop()?.replace(/[^A-Za-z ,.'-]/g, '').trim() ?? '';
-          if (tokens && tokens.length < 80) result.buyerName = tokens;
+        const idx = lines.findIndex(l => /\bBuyer\b/i.test(l));
+        if (idx >= 0) {
+          // check same line
+          const same = lines[idx].replace(/Buyer[:\-]/i, '').trim();
+          const candidate = same.match(/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+/);
+          if (candidate) result.buyerName = candidate[0];
+          else if (idx + 1 < lines.length) {
+            const nextCandidate = lines[idx + 1].match(/^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+/);
+            if (nextCandidate) result.buyerName = nextCandidate[0];
+          }
         }
       }
       if (!result.sellerName) {
-        const line = lines.find((l) => /\bSeller\b/i.test(l) && /[A-Z][a-z]+/.test(l));
-        if (line) {
-          const tokens = line.split(/Seller[:\-]/i).pop()?.replace(/[^A-Za-z ,.'-]/g, '').trim() ?? '';
-          if (tokens && tokens.length < 80) result.sellerName = tokens;
+        const idx = lines.findIndex(l => /\bSeller\b/i.test(l));
+        if (idx >= 0) {
+          const same = lines[idx].replace(/Seller[:\-]/i, '').trim();
+          const candidate = same.match(/[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+/);
+          if (candidate) result.sellerName = candidate[0];
+          else if (idx + 1 < lines.length) {
+            const nextCandidate = lines[idx + 1].match(/^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+/);
+            if (nextCandidate) result.sellerName = nextCandidate[0];
+          }
         }
+      }
+
+      // Final sanitization: trim and ensure not excessively long
+      for (const k of Object.keys(result) as (keyof OfferDetails)[]) {
+        if (typeof result[k] === 'string') result[k] = (result[k] as string).trim().slice(0, 200);
       }
 
       return result;
@@ -204,6 +254,16 @@ export const RealEstateAgent: React.FC<{ onGenerate?: () => void }> = ({ onGener
     try {
       const rawText = await extractTextFromFile(file);
       const parsed = parseTextForFields(String(rawText || file.name || ''));
+
+      // Debugging: show sample of extracted text and parsed fields in the browser console
+      try {
+        // avoid flooding console for very large files
+        const sample = typeof rawText === 'string' ? rawText.slice(0, 200) : '';
+        // eslint-disable-next-line no-console
+        console.debug('[RealEstateAgent] extractedTextSample:', sample);
+        // eslint-disable-next-line no-console
+        console.debug('[RealEstateAgent] parsedFields:', parsed);
+      } catch (_) { /* ignore logging errors in older browsers */ }
 
       const hasParsedValues = Object.values(parsed || {}).some((v) => v !== undefined && v !== null && String(v).trim() !== '');
 
